@@ -8,6 +8,7 @@ enum VidgetTab: String, CaseIterable, Identifiable {
     case calendar
     case translate
     case notes
+    case settings
 
     var id: Self { self }
 
@@ -20,6 +21,7 @@ enum VidgetTab: String, CaseIterable, Identifiable {
         case .calendar: "Календарь"
         case .translate: "Перевод"
         case .notes: "Заметки"
+        case .settings: "Настройки"
         }
     }
 
@@ -32,6 +34,7 @@ enum VidgetTab: String, CaseIterable, Identifiable {
         case .calendar: "calendar"
         case .translate: "character.book.closed"
         case .notes: "note.text"
+        case .settings: "gearshape"
         }
     }
 
@@ -44,6 +47,7 @@ enum VidgetTab: String, CaseIterable, Identifiable {
         case .calendar: "Ближайшие встречи"
         case .translate: "Русский · English · Italiano"
         case .notes: "Быстрые временные записи"
+        case .settings: "Приватность и запуск"
         }
     }
 
@@ -81,11 +85,16 @@ final class NotchViewModel: ObservableObject {
     let calendarStore = CalendarStore()
     let translator = TranslatorModel()
     let screenTextCapture = ScreenTextCapture()
+    let mediaController = MediaController()
+    let settingsStore = SettingsStore()
 
     func setExpanded(_ expanded: Bool) {
         guard isExpanded != expanded else { return }
         if !expanded, selectedTab == .notes {
             noteStore.removeEmptyDrafts()
+        }
+        if !expanded {
+            settingsStore.resetTemporaryReveals()
         }
         let animation: Animation = expanded
             ? .easeOut(duration: 0.16)

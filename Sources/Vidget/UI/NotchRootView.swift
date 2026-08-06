@@ -72,7 +72,7 @@ private struct ExpandedPanel: View {
                 .overlay(.white.opacity(0.07))
                 .padding(.vertical, 18)
 
-            TabRail(viewModel: viewModel, tabs: [.notes])
+            TabRail(viewModel: viewModel, tabs: [.notes, .settings])
         }
         .frame(
             width: NotchGeometry.expandedSize.width,
@@ -219,23 +219,25 @@ private struct TabContent: View {
     @ViewBuilder
     private var content: some View {
         switch tab {
+        case .player:
+            PlayerView(controller: viewModel.mediaController)
         case .shelf:
             ShelfView(store: viewModel.shelfStore)
         case .clipboard:
-            ClipboardView(store: viewModel.clipboardStore)
+            ClipboardView(store: viewModel.clipboardStore, settings: viewModel.settingsStore)
         case .snippets:
-            SnippetView(store: viewModel.snippetStore)
+            SnippetView(store: viewModel.snippetStore, settings: viewModel.settingsStore)
         case .calendar:
-            CalendarView(store: viewModel.calendarStore)
+            CalendarView(store: viewModel.calendarStore, settings: viewModel.settingsStore)
         case .translate:
             TranslationView(
                 model: viewModel.translator,
                 screenCapture: viewModel.screenTextCapture
             )
         case .notes:
-            NotesView(store: viewModel.noteStore)
-        default:
-            EmptyFeatureView(tab: tab, message: emptyMessage)
+            NotesView(store: viewModel.noteStore, settings: viewModel.settingsStore)
+        case .settings:
+            SettingsView(store: viewModel.settingsStore)
         }
     }
 
@@ -248,7 +250,315 @@ private struct TabContent: View {
         case .calendar: "Подключите календарь"
         case .translate: "Введите текст для перевода"
         case .notes: "Создайте быструю заметку"
+        case .settings: "Настройте TopNest"
         }
+    }
+}
+
+private struct PlayerView: View {
+    @ObservedObject var controller: MediaController
+    @State private var isSeeking = false
+    @State private var seekValue = 0.0
+    @State private var showsHistory = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            if showsHistory {
+                historyContent
+            } else {
+                switch controller.status {
+                case .loading:
+                    playerStatus(symbol: "waveform", title: "Ищем активный источник…")
+                case .empty:
+                    if let last = controller.history.first {
+                        lastTrackContent(last)
+                    } else {
+                        playerStatus(symbol: "waveform", title: "Сейчас ничего не играет")
+                    }
+                case .unavailable(let message):
+                    VStack(spacing: 9) {
+                        playerStatus(symbol: "exclamationmark.triangle", title: message)
+                        Button("Повторить") { controller.retry() }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.blue.opacity(0.9))
+                    }
+                case .ready:
+                    if let snapshot = controller.snapshot {
+                        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                            playerContent(snapshot, now: context.date)
+                        }
+                    } else {
+                        playerStatus(symbol: "waveform", title: "Сейчас ничего не играет")
+                    }
+                }
+            }
+
+            if !controller.history.isEmpty {
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        showsHistory.toggle()
+                    }
+                } label: {
+                    Image(systemName: showsHistory ? "xmark" : "clock.arrow.circlepath")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .frame(width: 25, height: 25)
+                        .background(.white.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help(showsHistory ? "Вернуться к плееру" : "История треков")
+            }
+        }
+    }
+
+    private var historyContent: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("Недавние треки")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.65))
+                Spacer()
+                Toggle("Продолжать при запуске", isOn: $controller.automaticallyResumesPlayback)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.trailing, 32)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 5) {
+                    ForEach(Array(controller.history.enumerated()), id: \.element.id) { index, entry in
+                        HStack(spacing: 9) {
+                            historyArtwork(entry)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(entry.title)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .lineLimit(1)
+                                Text([entry.artist, entry.sourceName]
+                                    .filter { !$0.isEmpty }
+                                    .joined(separator: " · "))
+                                    .font(.system(size: 8.5))
+                                    .foregroundStyle(.white.opacity(0.38))
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(entry.lastSeen, style: .relative)
+                                .font(.system(size: 8))
+                                .foregroundStyle(.white.opacity(0.25))
+                            if index == 0 {
+                                Button { controller.resumeLastTrack() } label: {
+                                    Image(systemName: "play.circle.fill")
+                                        .font(.system(size: 17))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Продолжить последний трек")
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+
+            HStack {
+                Spacer()
+                Button("Очистить историю") { controller.clearHistory() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.3))
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private func lastTrackContent(_ entry: PlaybackHistoryEntry) -> some View {
+        HStack(spacing: 14) {
+            historyArtwork(entry, size: 76)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Последний трек")
+                    .font(.system(size: 9, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(.white.opacity(0.3))
+                Text(entry.title)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                Text(entry.artist.isEmpty ? entry.sourceName : entry.artist)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1)
+                Button {
+                    controller.resumeLastTrack()
+                } label: {
+                    Label("Продолжить", systemImage: "play.fill")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.blue.opacity(0.9))
+            }
+            Spacer()
+        }
+        .padding(.top, 22)
+    }
+
+    @ViewBuilder
+    private func playerContent(_ snapshot: NowPlayingSnapshot, now: Date) -> some View {
+        let elapsed = snapshot.estimatedElapsed(at: now)
+
+        HStack(spacing: 17) {
+            artwork(snapshot)
+
+            VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(snapshot.title)
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Text(snapshot.artist.isEmpty ? snapshot.album : snapshot.artist)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.52))
+                        .lineLimit(1)
+                    if !snapshot.sourceName.isEmpty {
+                        Text(snapshot.sourceName.uppercased())
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                            .tracking(0.8)
+                            .foregroundStyle(.white.opacity(0.28))
+                            .lineLimit(1)
+                    }
+                }
+
+                if snapshot.duration > 0 {
+                    VStack(spacing: 2) {
+                        Slider(
+                            value: Binding(
+                                get: { isSeeking ? seekValue : elapsed },
+                                set: { seekValue = $0 }
+                            ),
+                            in: 0...snapshot.duration,
+                            onEditingChanged: { editing in
+                                if editing {
+                                    seekValue = elapsed
+                                    isSeeking = true
+                                } else {
+                                    controller.seek(to: seekValue)
+                                    isSeeking = false
+                                }
+                            }
+                        )
+                        .controlSize(.mini)
+                        .tint(.white.opacity(0.75))
+
+                        HStack {
+                            Text(formatTime(isSeeking ? seekValue : elapsed))
+                            Spacer()
+                            Text(formatTime(snapshot.duration))
+                        }
+                        .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.32))
+                    }
+                }
+
+                HStack(spacing: 17) {
+                    playerButton("backward.fill", help: "Предыдущий трек") {
+                        controller.previous()
+                    }
+                    playerButton(
+                        snapshot.isPlaying ? "pause.fill" : "play.fill",
+                        size: 34,
+                        prominent: true,
+                        help: snapshot.isPlaying ? "Пауза" : "Продолжить"
+                    ) {
+                        controller.togglePlayback()
+                    }
+                    playerButton("forward.fill", help: "Следующий трек") {
+                        controller.next()
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.top, 10)
+    }
+
+    @ViewBuilder
+    private func historyArtwork(_ entry: PlaybackHistoryEntry, size: CGFloat = 34) -> some View {
+        if let data = entry.artworkData, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.18))
+        } else {
+            RoundedRectangle(cornerRadius: size * 0.18)
+                .fill(.white.opacity(0.07))
+                .frame(width: size, height: size)
+                .overlay {
+                    Image(systemName: "music.note")
+                        .font(.system(size: size * 0.32))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func artwork(_ snapshot: NowPlayingSnapshot) -> some View {
+        if let data = snapshot.artworkData, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 126, height: 126)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+        } else {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(.white.opacity(0.07))
+                .frame(width: 126, height: 126)
+                .overlay {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 29, weight: .light))
+                        .foregroundStyle(.white.opacity(0.38))
+                }
+        }
+    }
+
+    private func playerButton(
+        _ symbol: String,
+        size: CGFloat = 28,
+        prominent: Bool = false,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: prominent ? 13 : 11, weight: .semibold))
+                .frame(width: size, height: size)
+                .background(
+                    prominent ? .white.opacity(0.9) : .white.opacity(0.07),
+                    in: Circle()
+                )
+                .foregroundStyle(prominent ? .black : .white.opacity(0.74))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private func playerStatus(symbol: String, title: String) -> some View {
+        VStack(spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(.white.opacity(0.65))
+            Text(title)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds.rounded(.down))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 
@@ -386,6 +696,7 @@ private struct FileDragPreview: View {
 
 private struct ClipboardView: View {
     @ObservedObject var store: ClipboardStore
+    @ObservedObject var settings: SettingsStore
 
     var body: some View {
         if store.entries.isEmpty {
@@ -404,17 +715,28 @@ private struct ClipboardView: View {
             ScrollView {
                 LazyVStack(spacing: 7) {
                     ForEach(store.entries) { entry in
+                        let hidden = settings.isHidden(
+                            .clipboard,
+                            id: entry.id.uuidString
+                        )
                         Button {
-                            store.copy(entry)
+                            if hidden {
+                                settings.revealTemporarily(
+                                    .clipboard,
+                                    id: entry.id.uuidString
+                                )
+                            } else {
+                                store.copy(entry)
+                            }
                         } label: {
                             HStack(spacing: 10) {
-                                Text(entry.text)
+                                Text(hidden ? "Содержимое скрыто" : entry.text)
                                     .font(.system(size: 11.5))
-                                    .foregroundStyle(.white.opacity(0.82))
+                                    .foregroundStyle(.white.opacity(hidden ? 0.42 : 0.82))
                                     .lineLimit(2)
                                     .multilineTextAlignment(.leading)
                                 Spacer(minLength: 8)
-                                Image(systemName: "doc.on.doc")
+                                Image(systemName: hidden ? "eye" : "doc.on.doc")
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.32))
                             }
@@ -437,6 +759,7 @@ private struct ClipboardView: View {
 
 private struct SnippetView: View {
     @ObservedObject var store: SnippetStore
+    @ObservedObject var settings: SettingsStore
     @State private var showingForm = false
     @State private var label = ""
     @State private var text = ""
@@ -537,21 +860,38 @@ private struct SnippetView: View {
                 ScrollView {
                     LazyVStack(spacing: 7) {
                         ForEach(store.snippets) { snippet in
+                            let hidden = settings.isHidden(
+                                .snippets,
+                                id: snippet.id.uuidString
+                            )
                             Button {
-                                store.copy(snippet)
+                                if hidden {
+                                    settings.revealTemporarily(
+                                        .snippets,
+                                        id: snippet.id.uuidString
+                                    )
+                                } else {
+                                    store.copy(snippet)
+                                }
                             } label: {
                                 HStack(spacing: 10) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        if let label = snippet.label, !label.isEmpty {
+                                        if hidden {
+                                            Label("Заготовка скрыта", systemImage: "eye")
+                                                .font(.system(size: 11.5, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.42))
+                                        } else if let label = snippet.label, !label.isEmpty {
                                             Text(label)
                                                 .font(.system(size: 10, weight: .semibold))
                                                 .foregroundStyle(.white.opacity(0.46))
                                         }
-                                        Text(snippet.text)
-                                            .font(.system(size: 11.5))
-                                            .foregroundStyle(.white.opacity(0.84))
-                                            .lineLimit(2)
-                                            .multilineTextAlignment(.leading)
+                                        if !hidden {
+                                            Text(snippet.text)
+                                                .font(.system(size: 11.5))
+                                                .foregroundStyle(.white.opacity(0.84))
+                                                .lineLimit(2)
+                                                .multilineTextAlignment(.leading)
+                                        }
                                     }
                                     Spacer(minLength: 8)
                                     Button {
@@ -602,6 +942,7 @@ private struct VidgetTextFieldStyle: TextFieldStyle {
 
 private struct NotesView: View {
     @ObservedObject var store: NoteStore
+    @ObservedObject var settings: SettingsStore
     @FocusState private var editorFocused: Bool
 
     var body: some View {
@@ -628,18 +969,35 @@ private struct NotesView: View {
                 ScrollView {
                     LazyVStack(spacing: 5) {
                         ForEach(store.notes) { note in
+                            let hidden = settings.isHidden(
+                                .notes,
+                                id: note.id.uuidString
+                            )
                             Button {
                                 store.select(note)
-                                editorFocused = true
+                                if hidden {
+                                    settings.revealTemporarily(
+                                        .notes,
+                                        id: note.id.uuidString
+                                    )
+                                } else {
+                                    editorFocused = true
+                                }
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(note.title)
+                                    Text(hidden ? "Заметка скрыта" : note.title)
                                         .font(.system(size: 10.5, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.76))
+                                        .foregroundStyle(.white.opacity(hidden ? 0.4 : 0.76))
                                         .lineLimit(1)
-                                    Text(note.modifiedAt, style: .time)
-                                        .font(.system(size: 8.5))
-                                        .foregroundStyle(.white.opacity(0.28))
+                                    if hidden {
+                                        Image(systemName: "eye")
+                                            .font(.system(size: 8.5))
+                                            .foregroundStyle(.white.opacity(0.28))
+                                    } else {
+                                        Text(note.modifiedAt, style: .time)
+                                            .font(.system(size: 8.5))
+                                            .foregroundStyle(.white.opacity(0.28))
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
@@ -664,6 +1022,7 @@ private struct NotesView: View {
                         Image(systemName: "doc.on.doc")
                     }
                     .help("Скопировать заметку")
+                    .disabled(selectedIsHidden)
                     Button(action: store.deleteSelected) {
                         Image(systemName: "trash")
                     }
@@ -674,16 +1033,37 @@ private struct NotesView: View {
                 .foregroundStyle(.white.opacity(0.42))
                 .frame(height: 15)
 
-                TextEditor(text: selectedText)
-                    .font(.system(size: 12.5))
-                    .scrollContentBackground(.hidden)
-                    .padding(7)
-                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                    .focused($editorFocused)
-                    .onExitCommand {
-                        editorFocused = false
-                        NSApp.keyWindow?.resignKey()
+                if selectedIsHidden, let note = store.selectedNote {
+                    Button {
+                        settings.revealTemporarily(.notes, id: note.id.uuidString)
+                        editorFocused = true
+                    } label: {
+                        VStack(spacing: 8) {
+                            Image(systemName: "eye")
+                                .font(.system(size: 20, weight: .light))
+                            Text("Заметка скрыта")
+                                .font(.system(size: 11.5, weight: .medium))
+                            Text("Нажмите, чтобы временно показать")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.white.opacity(0.32))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.52))
+                } else {
+                    TextEditor(text: selectedText)
+                        .font(.system(size: 12.5))
+                        .scrollContentBackground(.hidden)
+                        .padding(7)
+                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                        .focused($editorFocused)
+                        .onExitCommand {
+                            editorFocused = false
+                            NSApp.keyWindow?.resignKey()
+                        }
+                }
             }
         }
         .padding(.top, 8)
@@ -702,10 +1082,16 @@ private struct NotesView: View {
             set: { store.updateSelectedText($0) }
         )
     }
+
+    private var selectedIsHidden: Bool {
+        guard let note = store.selectedNote else { return false }
+        return settings.isHidden(.notes, id: note.id.uuidString)
+    }
 }
 
 private struct CalendarView: View {
     @ObservedObject var store: CalendarStore
+    @ObservedObject var settings: SettingsStore
 
     var body: some View {
         Group {
@@ -799,10 +1185,15 @@ private struct CalendarView: View {
                 ScrollView {
                     LazyVStack(spacing: 7) {
                         ForEach(Array(store.entries.enumerated()), id: \.element.id) { index, entry in
+                            let hidden = settings.isHidden(.calendar, id: entry.id)
                             CalendarEntryRow(
                                 entry: entry,
                                 now: context.date,
                                 prominent: index == 0,
+                                hidden: hidden,
+                                reveal: {
+                                    settings.revealTemporarily(.calendar, id: entry.id)
+                                },
                                 join: { store.join(entry) }
                             )
                         }
@@ -819,9 +1210,47 @@ private struct CalendarEntryRow: View {
     let entry: CalendarEntry
     let now: Date
     let prominent: Bool
+    let hidden: Bool
+    let reveal: () -> Void
     let join: () -> Void
 
     var body: some View {
+        Group {
+            if hidden {
+                Button(action: reveal) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "eye")
+                        Text("Встреча скрыта")
+                            .font(.system(size: 11, weight: .medium))
+                        Spacer()
+                        Text("Показать")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.3))
+                    }
+                    .foregroundStyle(.white.opacity(0.44))
+                }
+                .buttonStyle(.plain)
+            } else {
+                eventContent
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, prominent ? 9 : 7)
+        .background(
+            prominent ? .white.opacity(0.09) : .white.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 11)
+        )
+        .overlay(alignment: .leading) {
+            if prominent {
+                Capsule()
+                    .fill(.blue.opacity(0.7))
+                    .frame(width: 3)
+                    .padding(.vertical, 9)
+            }
+        }
+    }
+
+    private var eventContent: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
@@ -859,20 +1288,6 @@ private struct CalendarEntryRow: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, prominent ? 9 : 7)
-        .background(
-            prominent ? .white.opacity(0.09) : .white.opacity(0.045),
-            in: RoundedRectangle(cornerRadius: 11)
-        )
-        .overlay(alignment: .leading) {
-            if prominent {
-                Capsule()
-                    .fill(.blue.opacity(0.7))
-                    .frame(width: 3)
-                    .padding(.vertical, 9)
-            }
-        }
     }
 
     private var dateLabel: String {
@@ -894,6 +1309,98 @@ private struct CalendarEntryRow: View {
             return "через \(Int(seconds / 3_600)) ч"
         }
         return "через \(Int(seconds / 86_400)) дн"
+    }
+}
+
+private struct SettingsView: View {
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Label("Режим приватности", systemImage: "eye.slash.fill")
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Spacer()
+                    Toggle("", isOn: $store.privacyModeEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
+
+                Text("Скрывает содержимое во время показа экрана")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.white.opacity(0.34))
+
+                Divider().overlay(.white.opacity(0.06))
+
+                compactToggle("Буфер обмена", isOn: $store.hidesClipboard)
+                compactToggle("Заготовки", isOn: $store.hidesSnippets)
+                compactToggle("Календарь", isOn: $store.hidesCalendar)
+                compactToggle("Заметки", isOn: $store.hidesNotes)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+
+            VStack(alignment: .leading, spacing: 9) {
+                Label("Система", systemImage: "macbook")
+                    .font(.system(size: 11.5, weight: .semibold))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Запускать при входе")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("Открывать TopNest вместе с macOS")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.3))
+                    }
+                    Spacer()
+                    Toggle(
+                        "",
+                        isOn: Binding(
+                            get: { store.launchesAtLogin },
+                            set: { store.setLaunchAtLogin($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                }
+
+                if let error = store.launchAtLoginError {
+                    Text(error)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.orange.opacity(0.82))
+                } else {
+                    Text("Настройки сохраняются локально")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.white.opacity(0.32))
+                }
+
+                Spacer(minLength: 0)
+
+                Label(
+                    "Временное раскрытие сбрасывается при закрытии панели",
+                    systemImage: "lock.rotation"
+                )
+                .font(.system(size: 9.2))
+                .foregroundStyle(.white.opacity(0.32))
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .padding(.top, 8)
+    }
+
+    private func compactToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.white.opacity(store.privacyModeEnabled ? 0.68 : 0.36))
     }
 }
 

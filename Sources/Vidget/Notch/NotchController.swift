@@ -58,6 +58,7 @@ final class NotchController {
 
     func stop() {
         pointerWatcher.stop()
+        viewModel.mediaController.stop()
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }

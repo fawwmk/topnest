@@ -15,9 +15,18 @@ env \
 
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$ROOT_DIR/.build/release/TopNest" "$APP_DIR/Contents/MacOS/TopNest"
+cp \
+    "$ROOT_DIR/.build/release/libTopNestMediaHelper.dylib" \
+    "$APP_DIR/Contents/Resources/TopNestMediaHelper.dylib"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 
 "$ROOT_DIR/Scripts/ensure-signing-identity.sh"
+codesign \
+    --force \
+    --keychain "$KEYCHAIN_PATH" \
+    --sign "$SIGNING_IDENTITY" \
+    --timestamp=none \
+    "$APP_DIR/Contents/Resources/TopNestMediaHelper.dylib"
 codesign \
     --force \
     --deep \

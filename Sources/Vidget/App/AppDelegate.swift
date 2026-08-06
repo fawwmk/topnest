@@ -1,9 +1,11 @@
 import AppKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var notchController: NotchController?
     private var statusItem: NSStatusItem?
+    private let settingsStore = SettingsStore()
+    private weak var launchAtLoginItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -57,11 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(dataItem)
 
         let launchItem = NSMenuItem(
-            title: "Запускать при входе — скоро",
-            action: nil,
+            title: "Запускать при входе",
+            action: #selector(toggleLaunchAtLogin),
             keyEquivalent: ""
         )
-        launchItem.isEnabled = false
+        launchItem.target = self
+        launchAtLoginItem = launchItem
+        updateLaunchAtLoginItem()
         menu.addItem(launchItem)
         menu.addItem(.separator())
 
@@ -74,7 +78,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         item.menu = menu
+        menu.delegate = self
         statusItem = item
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        settingsStore.refreshLaunchAtLoginStatus()
+        updateLaunchAtLoginItem()
     }
 
     @objc private func togglePanel() {
@@ -91,5 +101,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func revealDataDirectory() {
         notchController?.revealDataDirectory()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        settingsStore.refreshLaunchAtLoginStatus()
+        settingsStore.setLaunchAtLogin(!settingsStore.launchesAtLogin)
+        updateLaunchAtLoginItem()
+    }
+
+    private func updateLaunchAtLoginItem() {
+        launchAtLoginItem?.state = settingsStore.launchesAtLogin ? .on : .off
     }
 }
