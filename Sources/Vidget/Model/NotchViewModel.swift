@@ -57,6 +57,19 @@ enum VidgetTab: String, CaseIterable, Identifiable {
         default: false
         }
     }
+
+    var keyboardShortcut: KeyEquivalent {
+        switch self {
+        case .player: "1"
+        case .shelf: "2"
+        case .clipboard: "3"
+        case .snippets: "4"
+        case .calendar: "5"
+        case .translate: "6"
+        case .notes: "7"
+        case .settings: "8"
+        }
+    }
 }
 
 @MainActor
@@ -73,9 +86,7 @@ final class NotchViewModel: ObservableObject {
             if selectedTab == .snippets {
                 snippetStore.reload()
             }
-            if selectedTab == .calendar {
-                calendarStore.reload()
-            }
+            updateVisibleServices()
         }
     }
     let shelfStore = ShelfStore()
@@ -84,9 +95,15 @@ final class NotchViewModel: ObservableObject {
     let noteStore = NoteStore()
     let calendarStore = CalendarStore()
     let translator = TranslatorModel()
-    let screenTextCapture = ScreenTextCapture()
     let mediaController = MediaController()
-    let settingsStore = SettingsStore()
+    let screenTextCapture: ScreenTextCapture
+    let settingsStore: SettingsStore
+
+    init() {
+        let settingsStore = SettingsStore()
+        self.settingsStore = settingsStore
+        screenTextCapture = ScreenTextCapture(settingsStore: settingsStore)
+    }
 
     func setExpanded(_ expanded: Bool) {
         guard isExpanded != expanded else { return }
@@ -96,11 +113,16 @@ final class NotchViewModel: ObservableObject {
         if !expanded {
             settingsStore.resetTemporaryReveals()
         }
+        calendarStore.setVisible(expanded && selectedTab == .calendar)
         let animation: Animation = expanded
             ? .easeOut(duration: 0.16)
             : .easeInOut(duration: 0.2)
         withAnimation(animation) {
             isExpanded = expanded
         }
+    }
+
+    private func updateVisibleServices() {
+        calendarStore.setVisible(isExpanded && selectedTab == .calendar)
     }
 }

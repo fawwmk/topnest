@@ -63,14 +63,6 @@ final class MediaController: ObservableObject {
     @Published private(set) var snapshot: NowPlayingSnapshot?
     @Published private(set) var status: MediaControllerStatus = .loading
     @Published private(set) var history: [PlaybackHistoryEntry] = []
-    @Published var automaticallyResumesPlayback: Bool {
-        didSet {
-            UserDefaults.standard.set(
-                automaticallyResumesPlayback,
-                forKey: Self.autoResumeDefaultsKey
-            )
-        }
-    }
 
     private var process: Process?
     private var inputHandle: FileHandle?
@@ -79,19 +71,13 @@ final class MediaController: ObservableObject {
     private var retryCount = 0
     private var restartTask: Task<Void, Never>?
     private var isStopping = false
-    private var autoResumeAttempted = false
     private var pendingResumeEntry: PlaybackHistoryEntry?
     private var pendingResumeTimeoutTask: Task<Void, Never>?
     private var sourceLaunchProcess: Process?
 
-    private static let autoResumeDefaultsKey = "TopNest.automaticallyResumesPlayback"
     private static let historyLimit = 20
 
     init() {
-        let storedPreference = UserDefaults.standard.object(
-            forKey: Self.autoResumeDefaultsKey
-        ) as? Bool
-        automaticallyResumesPlayback = storedPreference ?? true
         loadHistory()
         start()
     }
@@ -108,8 +94,17 @@ final class MediaController: ObservableObject {
             resumeLastTrack()
             return
         }
-        if !isSourceRunning(snapshot.sourceBundleIdentifier),
-           let entry = history.first(where: { $0.matches(snapshot) }) {
+
+        guard !snapshot.sourceBundleIdentifier.isEmpty else {
+            status = .unavailable("Не удалось определить приложение этого трека")
+            return
+        }
+
+        if !isSourceRunning(snapshot.sourceBundleIdentifier) {
+            guard let entry = history.first(where: { $0.matches(snapshot) }) else {
+                status = .unavailable("Источник трека закрыт и не сохранён в истории")
+                return
+            }
             pendingResumeTimeoutTask?.cancel()
             pendingResumeEntry = entry
             playInSource(of: entry)
@@ -182,7 +177,6 @@ final class MediaController: ObservableObject {
 
         status = .loading
         isStopping = false
-        autoResumeAttempted = false
         pendingResumeEntry = nil
         pendingResumeTimeoutTask?.cancel()
         pendingResumeTimeoutTask = nil
@@ -257,7 +251,6 @@ final class MediaController: ObservableObject {
                   !title.isEmpty else {
                 snapshot = nil
                 status = .empty
-                attemptAutoResumeIfNeeded(current: nil)
                 return
             }
             let nextSnapshot = NowPlayingSnapshot(
@@ -274,11 +267,21 @@ final class MediaController: ObservableObject {
                 artworkData: message.artworkBase64.flatMap { Data(base64Encoded: $0) },
                 receivedAt: Date()
             )
+            guard !Self.isIgnoredNonMusicAudio(
+                title: nextSnapshot.title,
+                artist: nextSnapshot.artist,
+                album: nextSnapshot.album,
+                sourceBundleIdentifier: nextSnapshot.sourceBundleIdentifier,
+                duration: nextSnapshot.duration
+            ) else {
+                snapshot = nil
+                status = .empty
+                return
+            }
             snapshot = nextSnapshot
             status = .ready
             record(nextSnapshot)
             completePendingResumeIfPossible(with: nextSnapshot)
-            attemptAutoResumeIfNeeded(current: nextSnapshot)
         case "error":
             snapshot = nil
             status = .unavailable(message.message ?? "Системный плеер недоступен")
@@ -305,27 +308,6 @@ final class MediaController: ObservableObject {
             try inputHandle.write(contentsOf: data)
         } catch {
             status = .unavailable("Связь с медиапомощником потеряна")
-        }
-    }
-
-    private func attemptAutoResumeIfNeeded(current: NowPlayingSnapshot?) {
-        guard automaticallyResumesPlayback,
-              !autoResumeAttempted,
-              let last = history.first else { return }
-        autoResumeAttempted = true
-        pendingResumeEntry = last
-        if let current, isSourceRunning(current.sourceBundleIdentifier) {
-            guard last.matches(current) else {
-                pendingResumeEntry = nil
-                return
-            }
-            pendingResumeEntry = nil
-            send(command: "seek", value: last.lastPosition)
-            if !current.isPlaying {
-                send(command: "play", bundleIdentifier: current.sourceBundleIdentifier)
-            }
-        } else {
-            playInSource(of: last)
         }
     }
 
@@ -396,18 +378,7 @@ final class MediaController: ObservableObject {
         guard entry.sourceBundleIdentifier == "ru.yandex.desktop.music" else {
             return nil
         }
-        if let exactURL = yandexDeepLink(from: entry.contentIdentifier) {
-            return exactURL
-        }
-        let searchText = [entry.artist, entry.title]
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !searchText.isEmpty else { return nil }
-        var components = URLComponents()
-        components.scheme = "yandexmusic"
-        components.host = "search"
-        components.queryItems = [URLQueryItem(name: "text", value: searchText)]
-        return components.url
+        return yandexDeepLink(from: entry.contentIdentifier)
     }
 
     private func yandexDeepLink(from identifier: String?) -> URL? {
@@ -449,15 +420,23 @@ final class MediaController: ObservableObject {
     private func beginResumeTimeout(for entry: PlaybackHistoryEntry) {
         pendingResumeTimeoutTask?.cancel()
         pendingResumeTimeoutTask = Task { @MainActor [weak self] in
+            let retryDelays: [Duration] = [
+                .seconds(1),
+                .milliseconds(1_500),
+                .milliseconds(2_500)
+            ]
+            for delay in retryDelays {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled,
+                      let self,
+                      self.pendingResumeEntry?.id == entry.id else { return }
+                if let bundleIdentifier = entry.sourceBundleIdentifier {
+                    self.send(command: "play", bundleIdentifier: bundleIdentifier)
+                }
+            }
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled,
                   let self,
-                  self.pendingResumeEntry?.id == entry.id else { return }
-            if let bundleIdentifier = entry.sourceBundleIdentifier {
-                self.send(command: "play", bundleIdentifier: bundleIdentifier)
-            }
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled,
                   self.pendingResumeEntry?.id == entry.id else { return }
             self.pendingResumeEntry = nil
             self.pendingResumeTimeoutTask = nil
@@ -510,13 +489,56 @@ final class MediaController: ObservableObject {
     }
 
     private func loadHistory() {
-        guard let url = try? AppStorage.file(named: "playback-history.json"),
-              let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(
+        var sourceURL: URL?
+        do {
+            let url = try AppStorage.file(named: "playback-history.json")
+            sourceURL = url
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            let data = try Data(contentsOf: url)
+            let decoded = try JSONDecoder().decode(
                 [PlaybackHistoryEntry].self,
                 from: data
-              ) else { return }
-        history = Array(decoded.prefix(Self.historyLimit))
+            )
+            let musicEntries = decoded.filter { entry in
+                !Self.isIgnoredNonMusicAudio(
+                    title: entry.title,
+                    artist: entry.artist,
+                    album: entry.album,
+                    sourceBundleIdentifier: entry.sourceBundleIdentifier ?? "",
+                    duration: entry.duration
+                )
+            }
+            history = Array(musicEntries.prefix(Self.historyLimit))
+            if musicEntries.count != decoded.count {
+                saveHistory()
+            }
+        } catch {
+            if let sourceURL {
+                AppStorage.preserveCorruptFile(at: sourceURL)
+            }
+            history = []
+            NSLog("TopNest: не удалось прочитать историю плеера: %@", error.localizedDescription)
+        }
+    }
+
+    private static func isIgnoredNonMusicAudio(
+        title: String,
+        artist: String,
+        album: String,
+        sourceBundleIdentifier: String,
+        duration: Double
+    ) -> Bool {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if normalizedTitle == "8flow" {
+            return true
+        }
+
+        let comesFromWebKitMediaProcess = sourceBundleIdentifier == "com.apple.WebKit.GPU"
+        let lacksMusicMetadata = artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let isShortSound = duration > 0 && duration < 15
+        return comesFromWebKitMediaProcess && lacksMusicMetadata && isShortSound
     }
 
     private func saveHistory() {

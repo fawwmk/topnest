@@ -32,8 +32,13 @@ enum ScreenTextCaptureError: LocalizedError {
 final class ScreenTextCapture: ObservableObject {
     @Published private(set) var state: ScreenTextCaptureState = .idle
 
+    private let settingsStore: SettingsStore
     private var overlayPanels: [ScreenSelectionPanel] = []
     private var recognizedTextHandler: ((String) -> Void)?
+
+    init(settingsStore: SettingsStore) {
+        self.settingsStore = settingsStore
+    }
 
     var isBusy: Bool {
         switch state {
@@ -109,6 +114,7 @@ final class ScreenTextCapture: ObservableObject {
             try? await Task.sleep(for: .milliseconds(90))
             do {
                 let image = try await Self.capture(rect: screenRect, on: screen)
+                settingsStore.saveCapturedImage(image)
                 let text = try await Self.recognizeText(in: image)
                 guard !text.isEmpty else { throw ScreenTextCaptureError.noTextFound }
                 recognizedTextHandler?(text)

@@ -6,43 +6,51 @@ final class PointerWatcher {
     var onInteractionChange: ((Bool) -> Void)?
     var onScreenChange: ((NSScreen) -> Void)?
 
-    private var timer: Timer?
-    private var movementMonitor: Any?
+    private var globalMovementMonitor: Any?
+    private var localMovementMonitor: Any?
+    private var closeTask: Task<Void, Never>?
     private var geometry: NotchGeometry?
     private var isExpanded = false
     private var isInteractive = false
     private var isExpansionLocked = false
-    private var closeDeadline: Date?
 
     func start(initialScreen: NSScreen) {
         geometry = NotchGeometry(screen: initialScreen)
         installMovementMonitor()
-        installTimer(interval: 0.25)
         evaluatePointer()
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        if let movementMonitor {
-            NSEvent.removeMonitor(movementMonitor)
-            self.movementMonitor = nil
+        cancelScheduledClose()
+        if let globalMovementMonitor {
+            NSEvent.removeMonitor(globalMovementMonitor)
+            self.globalMovementMonitor = nil
         }
+        if let localMovementMonitor {
+            NSEvent.removeMonitor(localMovementMonitor)
+            self.localMovementMonitor = nil
+        }
+    }
+
+    func suspend() {
+        isExpansionLocked = false
+        setExpanded(false)
+        setInteractive(false)
+        stop()
     }
 
     func setExpanded(_ expanded: Bool) {
         if !expanded, isExpansionLocked { return }
         guard isExpanded != expanded else { return }
         isExpanded = expanded
-        closeDeadline = nil
-        installTimer(interval: expanded ? 1.0 / 60.0 : 0.25)
+        cancelScheduledClose()
         onExpansionChange?(expanded)
     }
 
     func setExpansionLocked(_ locked: Bool) {
         guard isExpansionLocked != locked else { return }
         isExpansionLocked = locked
-        closeDeadline = nil
+        cancelScheduledClose()
         if locked {
             setExpanded(true)
             setInteractive(true)
@@ -52,28 +60,29 @@ final class PointerWatcher {
     }
 
     private func installMovementMonitor() {
-        movementMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let eventMask: NSEvent.EventTypeMask = [
+            .mouseMoved,
+            .leftMouseDragged,
+            .rightMouseDragged,
+            .otherMouseDragged
+        ]
+        globalMovementMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: eventMask
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.evaluatePointer()
             }
         }
-    }
-
-    private func installTimer(interval: TimeInterval) {
-        timer?.invalidate()
-        let nextTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+        localMovementMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) {
+            [weak self] event in
             MainActor.assumeIsolated {
                 self?.evaluatePointer()
             }
+            return event
         }
-        nextTimer.tolerance = interval * 0.2
-        RunLoop.main.add(nextTimer, forMode: .common)
-        timer = nextTimer
     }
 
-    private func evaluatePointer() {
+    private func evaluatePointer(closeImmediately: Bool = false) {
         let location = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(location) })
                 ?? NSScreen.main else { return }
@@ -98,7 +107,7 @@ final class PointerWatcher {
         }
 
         if isExpanded, isInside {
-            closeDeadline = nil
+            cancelScheduledClose()
             setInteractive(true)
             return
         }
@@ -107,13 +116,26 @@ final class PointerWatcher {
         guard isExpanded else { return }
         guard !isExpansionLocked else { return }
 
-        if let deadline = closeDeadline {
-            if Date() >= deadline {
-                setExpanded(false)
-            }
+        if closeImmediately {
+            setExpanded(false)
         } else {
-            closeDeadline = Date().addingTimeInterval(0.18)
+            scheduleClose()
         }
+    }
+
+    private func scheduleClose() {
+        guard closeTask == nil else { return }
+        closeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, let self else { return }
+            self.closeTask = nil
+            self.evaluatePointer(closeImmediately: true)
+        }
+    }
+
+    private func cancelScheduledClose() {
+        closeTask?.cancel()
+        closeTask = nil
     }
 
     private func setInteractive(_ interactive: Bool) {

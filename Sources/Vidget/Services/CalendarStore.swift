@@ -32,11 +32,18 @@ final class CalendarStore: ObservableObject {
 
     private let eventStore = EKEventStore()
     private var eventObserver: NSObjectProtocol?
+    private var isVisible = false
+    private var needsReload = true
 
     init() {
         access = Self.currentAccess()
         observeChanges()
-        if access == .granted {
+    }
+
+    func setVisible(_ visible: Bool) {
+        guard isVisible != visible else { return }
+        isVisible = visible
+        if visible, needsReload {
             reload()
         }
     }
@@ -50,7 +57,11 @@ final class CalendarStore: ObservableObject {
             let granted = try await eventStore.requestFullAccessToEvents()
             access = granted ? .granted : .denied
             if granted {
-                reload()
+                if isVisible {
+                    reload()
+                } else {
+                    needsReload = true
+                }
             }
         } catch {
             access = Self.currentAccess()
@@ -59,6 +70,7 @@ final class CalendarStore: ObservableObject {
     }
 
     func reload() {
+        needsReload = false
         access = Self.currentAccess()
         guard access == .granted else {
             entries = []
@@ -106,7 +118,12 @@ final class CalendarStore: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.reload()
+                guard let self else { return }
+                if self.isVisible {
+                    self.reload()
+                } else {
+                    self.needsReload = true
+                }
             }
         }
     }

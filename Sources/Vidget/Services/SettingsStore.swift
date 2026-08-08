@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ServiceManagement
 
@@ -27,6 +28,11 @@ final class SettingsStore: ObservableObject {
     }
     @Published private(set) var launchesAtLogin = false
     @Published private(set) var launchAtLoginError: String?
+    @Published var savesCapturedImages: Bool {
+        didSet { defaults.set(savesCapturedImages, forKey: Keys.savesCapturedImages) }
+    }
+    @Published private(set) var capturedImagesDirectoryPath: String
+    @Published private(set) var capturedImagesError: String?
     @Published private(set) var temporarilyRevealed: Set<String> = []
 
     private let defaults = UserDefaults.standard
@@ -37,6 +43,8 @@ final class SettingsStore: ObservableObject {
         static let snippets = "TopNest.privacy.hidesSnippets"
         static let calendar = "TopNest.privacy.hidesCalendar"
         static let notes = "TopNest.privacy.hidesNotes"
+        static let savesCapturedImages = "TopNest.capture.savesImages"
+        static let capturedImagesDirectory = "TopNest.capture.directory"
     }
 
     init() {
@@ -45,7 +53,14 @@ final class SettingsStore: ObservableObject {
         hidesSnippets = Self.storedBool(defaults, key: Keys.snippets, fallback: true)
         hidesCalendar = Self.storedBool(defaults, key: Keys.calendar, fallback: true)
         hidesNotes = Self.storedBool(defaults, key: Keys.notes, fallback: true)
+        savesCapturedImages = defaults.bool(forKey: Keys.savesCapturedImages)
+        capturedImagesDirectoryPath = defaults.string(forKey: Keys.capturedImagesDirectory)
+            ?? Self.defaultCapturedImagesDirectory.path
         refreshLaunchAtLoginStatus()
+    }
+
+    var capturedImagesDirectoryName: String {
+        URL(fileURLWithPath: capturedImagesDirectoryPath).lastPathComponent
     }
 
     func isHidden(_ section: PrivateContentSection, id: String) -> Bool {
@@ -80,6 +95,63 @@ final class SettingsStore: ObservableObject {
         launchesAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    func chooseCapturedImagesDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Папка для снимков TopNest"
+        panel.prompt = "Выбрать"
+        panel.message = "Снимки выделенной области будут сохраняться локально в эту папку."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: capturedImagesDirectoryPath)
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        capturedImagesDirectoryPath = directory.path
+        defaults.set(directory.path, forKey: Keys.capturedImagesDirectory)
+        capturedImagesError = nil
+    }
+
+    func openCapturedImagesDirectory() {
+        let directory = URL(fileURLWithPath: capturedImagesDirectoryPath, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            capturedImagesError = nil
+            NSWorkspace.shared.open(directory)
+        } catch {
+            capturedImagesError = "Не удалось открыть папку снимков"
+        }
+    }
+
+    func saveCapturedImage(_ image: CGImage) {
+        guard savesCapturedImages else { return }
+        let directory = URL(fileURLWithPath: capturedImagesDirectoryPath, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let baseName = "TopNest " + formatter.string(from: Date())
+            let destination = availableCaptureURL(baseName: baseName, in: directory)
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else {
+                capturedImagesError = "Не удалось подготовить снимок"
+                return
+            }
+            try data.write(to: destination, options: .atomic)
+            capturedImagesError = nil
+        } catch {
+            capturedImagesError = "Не удалось сохранить снимок"
+        }
+    }
+
     private func hides(_ section: PrivateContentSection) -> Bool {
         switch section {
         case .clipboard: hidesClipboard
@@ -91,6 +163,24 @@ final class SettingsStore: ObservableObject {
 
     private func key(_ section: PrivateContentSection, _ id: String) -> String {
         section.rawValue + ":" + id
+    }
+
+    private func availableCaptureURL(baseName: String, in directory: URL) -> URL {
+        var suffix = 1
+        var candidate = directory.appendingPathComponent(baseName + ".png")
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            suffix += 1
+            candidate = directory.appendingPathComponent("\(baseName)-\(suffix).png")
+        }
+        return candidate
+    }
+
+    private static var defaultCapturedImagesDirectory: URL {
+        let pictures = FileManager.default.urls(
+            for: .picturesDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.homeDirectoryForCurrentUser
+        return pictures.appendingPathComponent("TopNest", isDirectory: true)
     }
 
     private static func storedBool(

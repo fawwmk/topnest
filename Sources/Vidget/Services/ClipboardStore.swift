@@ -45,7 +45,19 @@ final class ClipboardStore: ObservableObject {
         save()
     }
 
+    func pauseMonitoring() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func resumeMonitoring() {
+        guard timer == nil else { return }
+        poll()
+        startMonitoring()
+    }
+
     private func startMonitoring() {
+        guard timer == nil else { return }
         let nextTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.poll()
@@ -82,14 +94,20 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func load() {
+        var sourceURL: URL?
         do {
             let url = try AppStorage.file(named: "clipboard.json")
+            sourceURL = url
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             entries = try decoder.decode([ClipboardEntry].self, from: data)
         } catch {
+            if let sourceURL {
+                AppStorage.preserveCorruptFile(at: sourceURL)
+            }
+            entries = []
             NSLog("TopNest: не удалось прочитать буфер: %@", error.localizedDescription)
         }
     }

@@ -63,14 +63,21 @@ final class ShelfStore: ObservableObject {
     }
 
     private func load() {
+        var sourceURL: URL?
         do {
             let url = try AppStorage.file(named: "shelf.json")
+            sourceURL = url
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             items = try decoder.decode([ShelfItem].self, from: data)
         } catch {
+            if let sourceURL {
+                AppStorage.preserveCorruptFile(at: sourceURL)
+            }
+            items = []
+            selection = []
             NSLog("TopNest: не удалось прочитать полку: %@", error.localizedDescription)
         }
     }

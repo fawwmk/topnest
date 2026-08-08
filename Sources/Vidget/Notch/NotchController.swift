@@ -8,7 +8,9 @@ final class NotchController {
     private let pointerWatcher = PointerWatcher()
     private var panel: NotchPanel?
     private var screenObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var cancellables: Set<AnyCancellable> = []
+    private var isSuspendedForSleep = false
 
     func start() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
@@ -54,6 +56,30 @@ final class NotchController {
                 self?.movePanel(to: screen)
             }
         }
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.screensDidSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.suspendForSleep()
+                }
+            }
+        )
+        workspaceObservers.append(
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.screensDidWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.resumeAfterSleep()
+                }
+            }
+        )
     }
 
     func stop() {
@@ -62,6 +88,10 @@ final class NotchController {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        viewModel.clipboardStore.pauseMonitoring()
         panel?.close()
     }
 
@@ -89,14 +119,33 @@ final class NotchController {
         panel?.orderFrontRegardless()
     }
 
+    private func suspendForSleep() {
+        guard !isSuspendedForSleep else { return }
+        isSuspendedForSleep = true
+        pointerWatcher.suspend()
+        viewModel.clipboardStore.pauseMonitoring()
+        viewModel.mediaController.stop()
+        panel?.orderOut(nil)
+    }
+
+    private func resumeAfterSleep() {
+        guard isSuspendedForSleep,
+              let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        isSuspendedForSleep = false
+        movePanel(to: screen)
+        pointerWatcher.start(initialScreen: screen)
+        viewModel.clipboardStore.resumeMonitoring()
+        viewModel.mediaController.retry()
+    }
+
     private func updateKeyboardFocus(for tab: VidgetTab? = nil) {
         guard let panel else { return }
         let activeTab = tab ?? viewModel.selectedTab
         let acceptsInput = viewModel.isExpanded && activeTab.acceptsKeyboardInput
-        panel.acceptsKeyboardInput = acceptsInput
+        panel.acceptsKeyboardInput = viewModel.isExpanded
         if acceptsInput {
             panel.makeKey()
-        } else if panel.isKeyWindow {
+        } else if !viewModel.isExpanded, panel.isKeyWindow {
             panel.resignKey()
         }
     }

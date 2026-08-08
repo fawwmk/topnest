@@ -99,8 +99,10 @@ final class NoteStore: ObservableObject {
     }
 
     private func load() {
+        var sourceURL: URL?
         do {
             let url = try AppStorage.file(named: "notes.json")
+            sourceURL = url
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
@@ -108,6 +110,11 @@ final class NoteStore: ObservableObject {
             notes = try decoder.decode([QuickNote].self, from: data)
             selectedID = notes.first?.id
         } catch {
+            if let sourceURL {
+                AppStorage.preserveCorruptFile(at: sourceURL)
+            }
+            notes = []
+            selectedID = nil
             NSLog("TopNest: не удалось прочитать заметки: %@", error.localizedDescription)
         }
     }

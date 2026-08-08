@@ -51,6 +51,9 @@ private struct CollapsedNotch: View {
             height: NotchGeometry.fallbackNotchSize.height
         )
         .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("TopNest")
+        .accessibilityHint("Наведите курсор, чтобы открыть панель")
     }
 }
 
@@ -171,6 +174,12 @@ private struct HoverTabButton: View {
         }
         .buttonStyle(.plain)
         .help(tab.title)
+        .keyboardShortcut(tab.keyboardShortcut, modifiers: .command)
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(selected ? "Выбрано" : "")
+        .accessibilityHint(
+            Text(verbatim: "Перейти на вкладку, Command \(tab.keyboardShortcut.character)")
+        )
         .onHover { isHovering in
             hovering = isHovering
             hoverTask?.cancel()
@@ -307,6 +316,7 @@ private struct PlayerView: View {
                 }
                 .buttonStyle(.plain)
                 .help(showsHistory ? "Вернуться к плееру" : "История треков")
+                .accessibilityLabel(showsHistory ? "Вернуться к плееру" : "История треков")
             }
         }
     }
@@ -318,9 +328,7 @@ private struct PlayerView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.65))
                 Spacer()
-                Toggle("Продолжать при запуске", isOn: $controller.automaticallyResumesPlayback)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
+                Label("Запуск только вручную", systemImage: "hand.tap")
                     .font(.system(size: 9))
                     .foregroundStyle(.white.opacity(0.4))
                     .padding(.trailing, 32)
@@ -354,6 +362,7 @@ private struct PlayerView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help("Продолжить последний трек")
+                                .accessibilityLabel("Продолжить последний трек")
                             }
                         }
                         .padding(.horizontal, 8)
@@ -449,6 +458,8 @@ private struct PlayerView: View {
                         )
                         .controlSize(.mini)
                         .tint(.white.opacity(0.75))
+                        .accessibilityLabel("Позиция воспроизведения")
+                        .accessibilityValue(formatTime(isSeeking ? seekValue : elapsed))
 
                         HStack {
                             Text(formatTime(isSeeking ? seekValue : elapsed))
@@ -541,6 +552,7 @@ private struct PlayerView: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     private func playerStatus(symbol: String, title: String) -> some View {
@@ -642,6 +654,7 @@ private struct ShelfCard: View {
                             .foregroundStyle(.white.opacity(0.32))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Убрать \(item.name) с полки")
                 }
 
                 Spacer(minLength: 0)
@@ -665,6 +678,9 @@ private struct ShelfCard: View {
         }
         .buttonStyle(.plain)
         .help(item.path)
+        .accessibilityLabel(item.name)
+        .accessibilityValue(selected ? "Выбрано" : "")
+        .accessibilityHint(item.exists ? "Выбрать файл на полке" : "Файл недоступен")
     }
 }
 
@@ -820,6 +836,7 @@ private struct SnippetView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.white.opacity(0.38))
+                    .accessibilityLabel("Закрыть форму")
                 }
                 .frame(height: 30)
             } else {
@@ -901,6 +918,7 @@ private struct SnippetView: View {
                                             .foregroundStyle(.white.opacity(0.28))
                                     }
                                     .buttonStyle(.plain)
+                                    .accessibilityLabel("Удалить заготовку")
                                 }
                                 .padding(.horizontal, 11)
                                 .padding(.vertical, 7)
@@ -963,6 +981,7 @@ private struct NotesView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.white.opacity(0.56))
+                    .accessibilityLabel("Создать заметку")
                 }
                 .padding(.horizontal, 3)
 
@@ -1022,11 +1041,13 @@ private struct NotesView: View {
                         Image(systemName: "doc.on.doc")
                     }
                     .help("Скопировать заметку")
+                    .accessibilityLabel("Скопировать заметку")
                     .disabled(selectedIsHidden)
                     Button(action: store.deleteSelected) {
                         Image(systemName: "trash")
                     }
                     .help("Удалить заметку")
+                    .accessibilityLabel("Удалить заметку")
                 }
                 .font(.system(size: 10.5, weight: .medium))
                 .buttonStyle(.plain)
@@ -1372,21 +1393,40 @@ private struct SettingsView: View {
                     Text(error)
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(.orange.opacity(0.82))
-                } else {
-                    Text("Настройки сохраняются локально")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.white.opacity(0.32))
                 }
 
-                Spacer(minLength: 0)
+                Divider().overlay(.white.opacity(0.06))
 
-                Label(
-                    "Временное раскрытие сбрасывается при закрытии панели",
-                    systemImage: "lock.rotation"
-                )
-                .font(.system(size: 9.2))
-                .foregroundStyle(.white.opacity(0.32))
-                .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Сохранять снимки")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text(store.capturedImagesDirectoryName)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.white.opacity(0.3))
+                            .lineLimit(1)
+                            .help(store.capturedImagesDirectoryPath)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $store.savesCapturedImages)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
+
+                HStack(spacing: 12) {
+                    Button("Выбрать папку") { store.chooseCapturedImagesDirectory() }
+                    Button("Открыть") { store.openCapturedImagesDirectory() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.blue.opacity(0.9))
+
+                if let error = store.capturedImagesError {
+                    Text(error)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange.opacity(0.82))
+                }
             }
             .padding(11)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1440,6 +1480,7 @@ private struct TranslationView: View {
                     LanguageMenuLabel(text: model.sourceHeader)
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityLabel("Исходный язык: \(model.sourceHeader)")
 
                 Spacer()
                 Button {
@@ -1457,6 +1498,7 @@ private struct TranslationView: View {
                 .buttonStyle(.plain)
                 .disabled(screenCapture.isBusy)
                 .help("Выделить область экрана и распознать текст")
+                .accessibilityLabel("Выделить область экрана и распознать текст")
                 Spacer()
 
                 Menu {
@@ -1475,6 +1517,7 @@ private struct TranslationView: View {
                     LanguageMenuLabel(text: model.selectedTarget.displayName)
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityLabel("Язык перевода: \(model.selectedTarget.displayName)")
             }
             .font(.system(size: 8.5, weight: .bold))
             .tracking(0.8)
@@ -1488,6 +1531,7 @@ private struct TranslationView: View {
                         .scrollContentBackground(.hidden)
                         .padding(7)
                         .focused($sourceFocused)
+                        .accessibilityLabel("Исходный текст")
                         .onExitCommand {
                             sourceFocused = false
                             NSApp.keyWindow?.resignKey()
@@ -1528,6 +1572,7 @@ private struct TranslationView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help("Скопировать перевод")
+                                .accessibilityLabel("Скопировать перевод")
                             }
                         }
                         .padding(7)
